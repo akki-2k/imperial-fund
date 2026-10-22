@@ -11,7 +11,7 @@ const fmtDate=s=>s.split('-').reverse().join('/');
 const monthName=m=>new Date(m+'-01T00:00').toLocaleDateString('en-IN',{month:'long',year:'numeric'});
 const blank=()=>({v:1,opening:0,rates:[{from:'0000-00',amount:200}],members:[],tx:[],savedAt:null});
 
-/* ---------- Storage (swap this object for a shared database later) ---------- */
+/* ---------- Local cache and shared storage ---------- */
 const Store={
   key(){return localStorage.getItem('gfm-mode')==='sample'?'gfm-sample':'gfm-data'},
   load(){try{const r=localStorage.getItem(this.key());return r?JSON.parse(r):null}catch(e){return null}},
@@ -66,16 +66,88 @@ if(typeof module!=='undefined')module.exports={calc,validTx,blank,paid,rateFor,w
 /* ---------- UI ---------- */
 if(typeof document!=='undefined'){
 const $=s=>document.querySelector(s);
+const config=window.FUND_SUPABASE_CONFIG||{};
+let cloud=null,cloudSetupError='';
+if(config.url||config.publishableKey){
+  if(!config.url||!config.publishableKey)cloudSetupError='Set both the Supabase project URL and publishable key in supabase-config.js.';
+  else if(!window.supabase)cloudSetupError='The Supabase client did not load. Check the network connection and reload.';
+  else try{cloud=window.supabase.createClient(config.url,config.publishableKey)}
+  catch(error){cloudSetupError='Invalid Supabase configuration: '+error.message}
+}
 let D=Store.load()||blank(),selMonth=thisMonth(),busy=false,F={type:'',member:'',month:'',from:'',to:'',q:''};
+let cloudVersion=null,initializing=!!cloud&&localStorage.getItem('gfm-mode')!=='sample';
+let syncMessage=cloud?'Connecting to shared fund…':cloudSetupError||'Cloud sync is not configured; data is saved only in this browser.';
+let remoteQueue=Promise.resolve();
 const sample=()=>localStorage.getItem('gfm-mode')==='sample';
 const nameOf=id=>(D.members.find(m=>m.id===id)||{name:'(removed member)'}).name;
 const toast=(m,long)=>{const t=$('#toast');t.textContent=m;t.className='show';clearTimeout(toast.h);toast.h=setTimeout(()=>t.className='',long?5000:2200)};
 
+async function getSharedState(){
+  const {data,error}=await cloud.from('fund_state').select('state,version').eq('id','shared').maybeSingle();
+  if(error)throw error;
+  return data;
+}
+async function initializeCloud(){
+  if(!cloud||sample())return;
+  initializing=true;syncMessage='Connecting to shared fund…';render();
+  try{
+    let row=await getSharedState();
+    if(!row){
+      const local=Store.load();
+      const hasLocalData=local&&(local.members.length||local.tx.length||local.opening||
+        local.rates.some(r=>r.from!=='0000-00'||r.amount!==200));
+      if(hasLocalData){
+        const result=await cloud.from('fund_state').insert({id:'shared',state:local,version:1}).select('state,version').single();
+        if(result.error&&result.error.code==='23505')row=await getSharedState();
+        else if(result.error)throw result.error;
+        else row=result.data;
+      }else cloudVersion=0;
+    }
+    if(row){
+      if(!validData(row.state))throw new Error('The shared database contains invalid fund data.');
+      D=row.state;cloudVersion=Number(row.version);Store.save(D);
+    }
+    syncMessage='Connected to the shared Supabase fund.';
+  }catch(error){
+    cloudVersion=null;
+    D=Store.load()||blank();
+    syncMessage='Cloud sync unavailable: '+(error.message||'check the Supabase setup and connection.');
+  }finally{
+    initializing=false;render();
+  }
+}
+function queueCloudSave(state){
+  if(!cloud||sample())return;
+  const snapshot=JSON.parse(JSON.stringify(state));
+  if(cloudVersion===null){
+    syncMessage='Changes are saved only in this browser because cloud sync is unavailable.';
+    render();return;
+  }
+  remoteQueue=remoteQueue.then(async()=>{
+    let result;
+    if(cloudVersion===0){
+      result=await cloud.from('fund_state').insert({id:'shared',state:snapshot,version:1}).select('version').single();
+      if(result.error&&result.error.code==='23505')throw new Error('Another device created the shared fund first. Reload this app to get the latest data.');
+    }else{
+      result=await cloud.from('fund_state').update({state:snapshot,version:cloudVersion+1})
+        .eq('id','shared').eq('version',cloudVersion).select('version').maybeSingle();
+    }
+    if(result.error)throw result.error;
+    if(!result.data)throw new Error('The fund changed on another device. Reload this app before making more changes.');
+    cloudVersion=Number(result.data.version);
+    syncMessage='All changes synced to Supabase.';
+    render();
+  }).catch(error=>{
+    syncMessage='Cloud sync failed: '+(error.message||'unknown database error')+' Export a backup before reloading.';
+    render();
+  });
+}
+
 function commit(fn){
   const snap=JSON.stringify(D);
   try{fn(D);Store.save(D)}
-  catch(e){D=JSON.parse(snap);toast('Could not save: '+(e.name==='QuotaExceededError'?'browser storage is full.':'browser storage is blocked.')+' Export a backup now.',1);render();return false}
-  render();return true;
+  catch(e){D=JSON.parse(snap);toast('Could not save locally: '+e.message+' Export a backup now.',1);render();return false}
+  render();queueCloudSave(D);return true;
 }
 
 const txRows=(l,a=true)=>l.length?l.map(t=>{const T=TYPES[t.type],who=t.type==='expense'?t.category:nameOf(t.memberId);
@@ -133,7 +205,9 @@ function vLoans(){
 }
 
 function vSettings(){
-  return `<div class="card"><h3>Your data stays on this device</h3><p class="hint">Records are saved in this browser only. They don't sync between phones. Clearing browser data, losing the phone or switching browsers can delete everything, so export a backup regularly.</p>
+  return `<div class="card"><h3>Shared fund storage</h3><p class="hint">${esc(syncMessage)}</p>
+   <p class="hint">This app uses a public shared database without sign-in. Anyone who can access the app can read, change, or erase fund records. Do not store sensitive personal information.</p>
+   <p class="hint">A local browser copy is also kept as a cache. Export backups regularly.</p>
    <p class="hint">Last saved: ${D.savedAt?new Date(D.savedAt).toLocaleString('en-IN'):'nothing saved yet'}</p>
    <div class="stack"><button class="primary" data-act="json">Export Backup (JSON)</button><button data-act="csv">Export CSV</button><button data-act="restore">Restore Backup</button></div></div>
   <h2>Fund settings</h2><div class="card"><label style="margin:0">Opening balance (₹)<input id="open" type="number" inputmode="decimal" min="0" step="0.01" value="${D.opening}"></label><button style="margin-top:8px" data-act="saveopen">Save opening balance</button>
@@ -145,7 +219,9 @@ function vSettings(){
 const routes={dashboard:vDash,members:vMembers,transactions:vTx,loans:vLoans,settings:vSettings};
 function render(){
   let v=(location.hash||'#dashboard').slice(1);if(!routes[v])v='dashboard';
-  $('#view').innerHTML=(sample()?'<div class="banner sample">Sample mode: these records are not your real fund. <button class="lnk" data-act="exitsample">Leave</button></div>':'')+warnings(D).map(w=>`<div class="banner warn" role="alert">${esc(w)}</div>`).join('')+routes[v]();
+  $('#view').innerHTML=(sample()?'<div class="banner sample">Sample mode: these records are not your real fund. <button class="lnk" data-act="exitsample">Leave</button></div>':'')+
+    (!sample()?`<div class="banner ${cloud&&cloudVersion!==null?'sample':'warn'}" role="status">${esc(syncMessage)}</div>`:'')+
+    (initializing?'<div class="card">Connecting to the shared fund. Please wait…</div>':warnings(D).map(w=>`<div class="banner warn" role="alert">${esc(w)}</div>`).join('')+routes[v]());
   document.querySelectorAll('#nav a').forEach(a=>a.classList.toggle('on',a.getAttribute('href')==='#'+v));
   if(v==='transactions')renderList();
 }
@@ -199,12 +275,13 @@ const A={
     const nb=calc({...D,opening:r2(v)}).s.bal;if(confirm(`Change opening balance to ${inr(v)}? Available cash will become ${inr(nb)}.`)){commit(d=>d.opening=r2(v));toast('Opening balance saved')}},
   saverate:()=>{const v=parseFloat($('#rate').value),m=$('#ratem').value;if(!(v>0)||!m)return toast('Enter an amount and a month.');
     if(confirm(`Set the monthly contribution to ${inr(v)} from ${monthName(m)}?`)){commit(d=>{d.rates=d.rates.filter(r=>r.from!==m);d.rates.push({from:m,amount:r2(v)})});toast('Contribution amount saved')}},
-  sample:()=>{if(!confirm('Switch to sample mode? Your real records stay untouched.'))return;localStorage.setItem('gfm-mode','sample');D=makeSample();try{Store.save(D)}catch(e){}location.hash='#dashboard';render()},
-  exitsample:()=>{localStorage.removeItem('gfm-mode');D=Store.load()||blank();render();toast('Back to your real records')},
+  sample:()=>{if(!confirm('Switch to sample mode? Your real records stay untouched.'))return;localStorage.setItem('gfm-mode','sample');D=makeSample();try{Store.save(D)}catch(e){toast('Could not save sample data: '+e.message,1)}location.hash='#dashboard';render()},
+  exitsample:()=>{localStorage.removeItem('gfm-mode');D=Store.load()||blank();render();toast('Back to your real records');initializeCloud()},
   reset:()=>{if(confirm('Erase ALL records on this device? This cannot be undone unless you have a backup.')&&confirm('Really erase everything?'))commit(d=>Object.assign(d,blank()))}
 };
-document.addEventListener('click',e=>{const b=e.target.closest('[data-act]');if(b&&A[b.dataset.act])A[b.dataset.act](b.dataset)});
+document.addEventListener('click',e=>{const b=e.target.closest('[data-act]');if(b&&initializing)return toast('Wait for the shared fund to finish connecting.');if(b&&A[b.dataset.act])A[b.dataset.act](b.dataset)});
 document.addEventListener('submit',e=>{if(e.target.id!=='addm')return;e.preventDefault();const n=e.target.n.value.trim();
+  if(initializing)return toast('Wait for the shared fund to finish connecting.');
   if(!n)return;if(D.members.some(m=>m.name.toLowerCase()===n.toLowerCase())&&!confirm(`A member named "${n}" already exists. Add another?`))return;
   commit(d=>d.members.push({id:uid(),name:n,active:true}))});
 document.addEventListener('input',e=>{const k=e.target.dataset.f;if(k){F[k]=e.target.value;renderList()}});
@@ -215,5 +292,6 @@ $('#file').onchange=e=>{const fl=e.target.files[0];e.target.value='';if(!fl)retu
     if(confirm(`Replace current records with this backup (${d.members.length} members, ${d.tx.length} transactions)?`)){commit(x=>Object.assign(x,d));toast('Backup restored')}};rd.readAsText(fl)};
 addEventListener('hashchange',render);
 render();
+if(cloud)initializeCloud();
 if('serviceWorker' in navigator&&location.protocol.startsWith('http'))navigator.serviceWorker.register('sw.js').catch(()=>{});
 }
