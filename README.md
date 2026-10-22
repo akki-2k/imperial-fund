@@ -10,6 +10,7 @@ Open `index.html` in a browser, or for PWA install testing run `python3 -m http.
 2. Settings → Pages → Source: "Deploy from a branch", branch `main`, folder `/ (root)`.
 3. Open the URL GitHub shows. On a phone: Share/Menu → "Add to Home Screen" to install it.
 (Cloudflare Pages works the same: connect the repo, no build command, output directory `/`.)
+After Pages is enabled, pushes to `main` trigger a deployment. Allow the Pages build to finish before checking the live site.
 
 ## Using it
 - **Members**: add 6–10 (or more) people; rename or set inactive without losing history.
