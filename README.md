@@ -23,12 +23,22 @@ After Pages is enabled, pushes to `main` trigger a deployment. Allow the Pages b
 1. Create a Supabase project and copy its Project URL and **publishable key**.
 2. Put them in `supabase-config.js` as `url` and `publishableKey`. Never use a `service_role` or secret key in this browser app.
 3. Run `supabase/setup.sql` against the project database (for example, through the Supabase MCP SQL tools or the Supabase SQL Editor).
-4. Serve or deploy the app over HTTP(S). The app connects to the shared Supabase row and keeps a local browser cache.
+4. In Supabase Authentication, create the admin's email/password user. In the SQL Editor, grant that account the admin claim (replace the email):
 
-When the shared table is empty, the first browser with existing local records copies them to Supabase. Otherwise, the existing shared records are loaded. Version checks detect conflicting simultaneous edits; reload the app to get the latest shared data after a conflict. Export backups regularly.
+   ```sql
+   update auth.users
+   set raw_app_meta_data = coalesce(raw_app_meta_data, '{}'::jsonb)
+     || '{"fund_role":"admin"}'::jsonb
+   where email = 'admin@example.com';
+   ```
+
+   Sign in to the app with that account after assigning the claim. The admin claim is stored in trusted `app_metadata`; ordinary users cannot grant it to themselves. Existing sessions must sign out and back in to receive a changed claim.
+5. Serve or deploy the app over HTTP(S). The app connects to the shared Supabase row and keeps a local browser cache.
+
+When the shared table is empty, the first admin browser with existing local records copies them to Supabase. Otherwise, the existing shared records are loaded. Version checks detect conflicting simultaneous edits; reload the app to get the latest shared data after a conflict. Export backups regularly.
 
 ## Security and shared access
-This setup intentionally uses anonymous public access without sign-in. Anyone who can reach the app and its public Supabase endpoint can read, change, or erase fund records. Do not store sensitive personal information. The publishable key is designed for client-side use; the database's Row Level Security policies control the public access.
+The dashboard is publicly readable without sign-in. Only signed-in users whose trusted Supabase `app_metadata.fund_role` is `admin` can insert or update fund data. Row Level Security enforces this even if a visitor bypasses the app interface. No client role can delete the shared row. Because dashboard data is public, do not store sensitive personal information. The publishable key is designed for client-side use; never expose a service-role or secret key.
 
 ## Supabase MCP in VS Code
 The project includes `.vscode/mcp.json` for the hosted Supabase MCP server. Authenticate with Supabase in VS Code, then reload the MCP server/session to make its tools available. For least privilege, scope the connection to your project using its project reference in the MCP URL. The MCP server is for database setup/admin; the deployed app connects using the project URL and publishable key.

@@ -76,9 +76,11 @@ if(config.url||config.publishableKey){
 }
 let D=Store.load()||blank(),selMonth=thisMonth(),busy=false,F={type:'',member:'',month:'',from:'',to:'',q:''};
 let cloudVersion=null,initializing=!!cloud&&localStorage.getItem('gfm-mode')!=='sample';
+let authSession=null,isAdmin=false;
 let syncMessage=cloud?'Connecting to shared fund…':cloudSetupError||'Cloud sync is not configured; data is saved only in this browser.';
 let remoteQueue=Promise.resolve();
 const sample=()=>localStorage.getItem('gfm-mode')==='sample';
+const sessionIsAdmin=session=>session?.user?.app_metadata?.fund_role==='admin';
 const nameOf=id=>(D.members.find(m=>m.id===id)||{name:'(removed member)'}).name;
 const toast=(m,long)=>{const t=$('#toast');t.textContent=m;t.className='show';clearTimeout(toast.h);toast.h=setTimeout(()=>t.className='',long?5000:2200)};
 
@@ -91,12 +93,16 @@ async function initializeCloud(){
   if(!cloud||sample())return;
   initializing=true;syncMessage='Connecting to shared fund…';render();
   try{
+    const {data:sessionData,error:sessionError}=await cloud.auth.getSession();
+    if(sessionError)throw sessionError;
+    authSession=sessionData.session;
+    isAdmin=sessionIsAdmin(authSession);
     let row=await getSharedState();
     if(!row){
       const local=Store.load();
       const hasLocalData=local&&(local.members.length||local.tx.length||local.opening||
         local.rates.some(r=>r.from!=='0000-00'||r.amount!==200));
-      if(hasLocalData){
+      if(hasLocalData&&isAdmin){
         const result=await cloud.from('fund_state').insert({id:'shared',state:local,version:1}).select('state,version').single();
         if(result.error&&result.error.code==='23505')row=await getSharedState();
         else if(result.error)throw result.error;
@@ -107,7 +113,7 @@ async function initializeCloud(){
       if(!validData(row.state))throw new Error('The shared database contains invalid fund data.');
       D=row.state;cloudVersion=Number(row.version);Store.save(D);
     }
-    syncMessage='Connected to the shared Supabase fund.';
+    syncMessage=isAdmin?'Connected as fund admin. Changes can be made.':'Connected to the shared fund. Read-only access.';
   }catch(error){
     cloudVersion=null;
     D=Store.load()||blank();
@@ -118,6 +124,10 @@ async function initializeCloud(){
 }
 function queueCloudSave(state){
   if(!cloud||sample())return;
+  if(!isAdmin){
+    syncMessage='Read-only: sign in with the fund admin account to make changes.';
+    render();return;
+  }
   const snapshot=JSON.parse(JSON.stringify(state));
   if(cloudVersion===null){
     syncMessage='Changes are saved only in this browser because cloud sync is unavailable.';
@@ -144,13 +154,14 @@ function queueCloudSave(state){
 }
 
 function commit(fn){
+  if(!sample()&&!isAdmin){toast('Read-only access. Sign in with the fund admin account to make changes.',1);return false}
   const snap=JSON.stringify(D);
   try{fn(D);Store.save(D)}
   catch(e){D=JSON.parse(snap);toast('Could not save locally: '+e.message+' Export a backup now.',1);render();return false}
   render();queueCloudSave(D);return true;
 }
 
-const txRows=(l,a=true)=>l.length?l.map(t=>{const T=TYPES[t.type],who=t.type==='expense'?t.category:nameOf(t.memberId);
+const txRows=(l,a=isAdmin)=>l.length?l.map(t=>{const T=TYPES[t.type],who=t.type==='expense'?t.category:nameOf(t.memberId);
   return `<li class="tx"><div class="tl"><span class="chip ${t.type==='loan'?'loan':T.c}">${T.l}</span><b>${esc(who)}</b><small>${fmtDate(t.date)}${t.month?', for '+monthName(t.month):''}</small>${t.note?`<small>${esc(t.note)}</small>`:''}</div>
   <div class="ta"><b class="${T.c}" title="Effect on available balance">${T.s>0?'+':'−'}${inr(t.amount)}</b>${a?`<span><button class="lnk" data-act="edit" data-id="${t.id}">Edit</button><button class="lnk" data-act="del" data-id="${t.id}">Delete</button></span>`:''}</div></li>`}).join(''):'<li class="empty">No transactions yet.</li>';
 
@@ -158,7 +169,7 @@ function vDash(){
   const {s}=calc(D),act=D.members.filter(m=>m.active),req=rateFor(D,selMonth);
   const rows=act.map(m=>{const p=paid(D,m.id,selMonth);return{m,p,due:r2(Math.max(0,req-p))}});
   const pend=r2(rows.reduce((a,r)=>a+r.due,0)),target=req*act.length,got=rows.reduce((a,r)=>a+Math.min(r.p,req),0),pct=target?Math.round(got/target*100):0;
-  return `<section class="hero"><p>Available cash</p><strong class="big">${inr(s.bal)}</strong><button class="primary" data-act="add">+ Add Transaction</button></section>
+  return `<section class="hero"><p>Available cash</p><strong class="big">${inr(s.bal)}</strong>${isAdmin?'<button class="primary" data-act="add">+ Add Transaction</button>':''}</section>
   <div class="grid">
    <div class="card"><span>Total Contributions</span><b class="in">${inr(s.contrib)}</b></div>
    <div class="card"><span>Loans Outstanding</span><b class="out">${inr(s.out)}</b></div>
@@ -168,20 +179,20 @@ function vDash(){
   <h2>Monthly collection</h2><div class="card">
    <label style="margin:0">Month<input type="month" id="selm" value="${selMonth}"></label>
    ${act.length?`<div class="bar" aria-hidden="true"><i style="width:${pct}%"></i></div><small>${inr(got)} of ${inr(target)} collected (${inr(req)} per member)</small>
-   <ul>${rows.map(r=>`<li class="row"><span>${esc(r.m.name)}</span><span>${r.p>=req?'<span class="chip paid">Paid</span>':`<span class="chip ${r.p>0?'part':'due'}">${r.p>0?'Part-paid, ':'Due '}${inr(r.due)}${r.p>0?' left':''}</span> <button class="lnk" data-act="addc" data-m="${r.m.id}">Record</button>`}</span></li>`).join('')}</ul>`
+   <ul>${rows.map(r=>`<li class="row"><span>${esc(r.m.name)}</span><span>${r.p>=req?'<span class="chip paid">Paid</span>':`<span class="chip ${r.p>0?'part':'due'}">${r.p>0?'Part-paid, ':'Due '}${inr(r.due)}${r.p>0?' left':''}</span> ${isAdmin?`<button class="lnk" data-act="addc" data-m="${r.m.id}">Record</button>`:''}`}</span></li>`).join('')}</ul>`
    :'<p class="empty">No active members yet. <a href="#members">Add your members</a> to start tracking.</p>'}</div>
   <h2>Latest activity</h2><div class="card"><ul>${txRows(sorted(D.tx).slice(0,5),false)}</ul></div>`;
 }
 
 function vMembers(){
   const {by}=calc(D),req=rateFor(D,thisMonth());
-  return `<form id="addm" class="flex" style="align-items:end"><label style="flex:3;margin:0">New member<input name="n" placeholder="Name" required autocomplete="off"></label><button class="primary" style="flex:1">Add</button></form>
+  return `${isAdmin?'<form id="addm" class="flex" style="align-items:end"><label style="flex:3;margin:0">New member<input name="n" placeholder="Name" required autocomplete="off"></label><button class="primary" style="flex:1">Add</button></form>':''}
   <div class="stack" style="margin-top:14px">${D.members.length?D.members.map(m=>{const b=by[m.id],p=paid(D,m.id,thisMonth());
    const st=!m.active?'<span class="chip off">Inactive</span>':p>=req?'<span class="chip paid">Paid this month</span>':`<span class="chip ${p>0?'part':'due'}">${p>0?'Part-paid':'Not paid'} this month</span>`;
    return `<div class="card"><div class="flex" style="justify-content:space-between;align-items:center"><h3>${esc(m.name)}</h3>${st}</div>
    <div class="two" style="margin:10px 0"><small>Contributed<br><b class="in">${inr(b.c)}</b></small><small>Borrowed<br><b class="out">${inr(b.b)}</b></small><small>Repaid<br><b class="in">${inr(b.r)}</b></small><small>Owes now<br><b class="${b.o>0?'out':''}">${inr(b.o)}</b></small></div>
    <ul>${txRows(sorted(D.tx.filter(t=>t.memberId===m.id)).slice(0,3),false)}</ul>
-   <div class="flex"><button data-act="det" data-id="${m.id}">All records</button><button data-act="editm" data-id="${m.id}">Rename</button><button data-act="tog" data-id="${m.id}">${m.active?'Set inactive':'Set active'}</button></div></div>`}).join(''):'<p class="empty">No members yet. Add the first one above.</p>'}</div>`;
+   <div class="flex"><button data-act="det" data-id="${m.id}">All records</button>${isAdmin?`<button data-act="editm" data-id="${m.id}">Rename</button><button data-act="tog" data-id="${m.id}">${m.active?'Set inactive':'Set active'}</button>`:''}</div></div>`}).join(''):'<p class="empty">No members yet.</p>'}</div>`;
 }
 
 function vTx(){
@@ -201,24 +212,28 @@ function vLoans(){
   return `<div class="card"><small>Total outstanding</small><b class="out" style="display:block;font-size:28px">${inr(s.out)}</b><small>Given ${inr(s.loan)}, repaid ${inr(s.repay)}</small></div>
   <div class="stack" style="margin-top:12px">${l.length?l.map(m=>{const b=by[m.id];return `<div class="card"><div class="flex" style="justify-content:space-between"><h3>${esc(m.name)}</h3><b class="${b.o>0?'out':''}">${inr(b.o)} owed</b></div><small>Borrowed ${inr(b.b)}, repaid ${inr(b.r)}</small>
    <ul>${txRows(sorted(D.tx.filter(t=>t.memberId===m.id&&(t.type==='loan'||t.type==='repayment'))).slice(0,4),false)}</ul>
-   <div class="flex"><button data-act="newloan" data-m="${m.id}">Give loan</button><button class="primary" data-act="repay" data-m="${m.id}" ${b.o>0?'':'disabled'}>Record repayment</button></div></div>`}).join(''):'<p class="empty">No loans yet. Use + Add and choose Loan given.</p>'}</div>`;
+   ${isAdmin?`<div class="flex"><button data-act="newloan" data-m="${m.id}">Give loan</button><button class="primary" data-act="repay" data-m="${m.id}" ${b.o>0?'':'disabled'}>Record repayment</button></div>`:''}</div>`}).join(''):'<p class="empty">No loans yet.</p>'}</div>`;
 }
 
 function vSettings(){
   return `<div class="card"><h3>Shared fund storage</h3><p class="hint">${esc(syncMessage)}</p>
-   <p class="hint">This app uses a public shared database without sign-in. Anyone who can access the app can read, change, or erase fund records. Do not store sensitive personal information.</p>
+   <p class="hint">The dashboard is public and read-only. Only the configured fund admin can change shared records.</p>
    <p class="hint">A local browser copy is also kept as a cache. Export backups regularly.</p>
    <p class="hint">Last saved: ${D.savedAt?new Date(D.savedAt).toLocaleString('en-IN'):'nothing saved yet'}</p>
-   <div class="stack"><button class="primary" data-act="json">Export Backup (JSON)</button><button data-act="csv">Export CSV</button><button data-act="restore">Restore Backup</button></div></div>
-  <h2>Fund settings</h2><div class="card"><label style="margin:0">Opening balance (₹)<input id="open" type="number" inputmode="decimal" min="0" step="0.01" value="${D.opening}"></label><button style="margin-top:8px" data-act="saveopen">Save opening balance</button>
+   <div class="stack"><button class="primary" data-act="json">Export Backup (JSON)</button><button data-act="csv">Export CSV</button>${isAdmin?'<button data-act="restore">Restore Backup</button>':''}</div></div>
+  ${isAdmin?`<h2>Fund settings</h2><div class="card"><label style="margin:0">Opening balance (₹)<input id="open" type="number" inputmode="decimal" min="0" step="0.01" value="${D.opening}"></label><button style="margin-top:8px" data-act="saveopen">Save opening balance</button>
    <label>Monthly contribution (₹)<input id="rate" type="number" inputmode="decimal" min="1" step="1" value="${rateFor(D,thisMonth())}"></label>
    <label>Applies from month<input id="ratem" type="month" value="${thisMonth()}"></label><button style="margin-top:8px" data-act="saverate">Save contribution amount</button><p class="hint">Earlier months keep the amount that applied then.</p></div>
-  <h2>Testing and reset</h2><div class="card stack"><button data-act="${sample()?'exitsample':'sample'}">${sample()?'Leave sample mode':'Try with sample data'}</button><p class="hint">Sample data is kept separate and never touches your real records.</p><button class="danger" data-act="reset">Erase all ${sample()?'sample':'real'} data</button></div>`;
+  <h2>Testing and reset</h2><div class="card stack"><button data-act="${sample()?'exitsample':'sample'}">${sample()?'Leave sample mode':'Try with sample data'}</button><p class="hint">Sample data is kept separate and never touches your real records.</p><button class="danger" data-act="reset">Erase all ${sample()?'sample':'real'} data</button></div>`:''}`;
 }
 
 const routes={dashboard:vDash,members:vMembers,transactions:vTx,loans:vLoans,settings:vSettings};
 function render(){
   let v=(location.hash||'#dashboard').slice(1);if(!routes[v])v='dashboard';
+  const access=$('#admin-access');
+  access.textContent=isAdmin?'Sign out':authSession?'Sign out (read-only)':'Admin sign in';
+  access.dataset.act=authSession?'signout':'auth';
+  $('[data-act="add"]')?.toggleAttribute('hidden',!isAdmin);
   $('#view').innerHTML=(sample()?'<div class="banner sample">Sample mode: these records are not your real fund. <button class="lnk" data-act="exitsample">Leave</button></div>':'')+
     (!sample()?`<div class="banner ${cloud&&cloudVersion!==null?'sample':'warn'}" role="status">${esc(syncMessage)}</div>`:'')+
     (initializing?'<div class="card">Connecting to the shared fund. Please wait…</div>':warnings(D).map(w=>`<div class="banner warn" role="alert">${esc(w)}</div>`).join('')+routes[v]());
@@ -250,6 +265,23 @@ function openForm(type='contribution',id='',member=''){
   if(!dlg.open)dlg.showModal();
 }
 
+function openAdminLogin(){
+  if(!cloud)return toast('Supabase is not configured.',1);
+  const dlg=$('#dlg');
+  dlg.innerHTML='<form id="admin-login"><h3>Admin sign in</h3><p class="hint">Only the configured fund admin account can edit shared records.</p><label>Email<input name="email" type="email" autocomplete="username" required></label><label>Password<input name="password" type="password" autocomplete="current-password" required></label><p id="auth-err" class="err" role="alert"></p><div class="flex"><button type="button" data-act="close">Cancel</button><button class="primary">Sign in</button></div></form>';
+  $('#admin-login').onsubmit=async e=>{
+    e.preventDefault();
+    const form=e.currentTarget,submit=form.querySelector('button[type="submit"],button.primary');
+    submit.disabled=true;
+    const {error}=await cloud.auth.signInWithPassword({email:form.elements.email.value.trim(),password:form.elements.password.value});
+    submit.disabled=false;
+    if(error){$('#auth-err').textContent=error.message;return}
+    dlg.close();
+    toast('Signed in. Admin permissions are checked by Supabase.');
+  };
+  if(!dlg.open)dlg.showModal();
+}
+
 /* ---------- Files ---------- */
 const download=(name,text,mime)=>{const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([text],{type:mime}));a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1e3)};
 const makeSample=()=>{const d=blank(),n=['Asha','Bala','Chitra','Dev','Esha','Farid'],m=thisMonth(),dt=today();
@@ -258,6 +290,8 @@ const makeSample=()=>{const d=blank(),n=['Asha','Bala','Chitra','Dev','Esha','Fa
   d.tx.push({id:uid(),type:'loan',memberId:d.members[1].id,amount:500,date:dt,month:'',note:'Sample loan',category:''},{id:uid(),type:'repayment',memberId:d.members[1].id,amount:200,date:dt,month:'',note:'',category:''},{id:uid(),type:'expense',memberId:'',amount:100,date:dt,month:'',note:'',category:'Tea and snacks'});return d};
 
 const A={
+  auth:openAdminLogin,
+  signout:async()=>{const {error}=await cloud.auth.signOut();if(error)toast('Could not sign out: '+error.message,1)},
   add:()=>openForm(),addc:d=>openForm('contribution','',d.m),newloan:d=>openForm('loan','',d.m),repay:d=>openForm('repayment','',d.m),
   ftype:d=>{const m=$('#f [name=member]');openForm(d.t,'',m?m.value:'')},close:()=>$('#dlg').close(),
   edit:d=>openForm(D.tx.find(x=>x.id===d.id).type,d.id),
@@ -279,9 +313,10 @@ const A={
   exitsample:()=>{localStorage.removeItem('gfm-mode');D=Store.load()||blank();render();toast('Back to your real records');initializeCloud()},
   reset:()=>{if(confirm('Erase ALL records on this device? This cannot be undone unless you have a backup.')&&confirm('Really erase everything?'))commit(d=>Object.assign(d,blank()))}
 };
-document.addEventListener('click',e=>{const b=e.target.closest('[data-act]');if(b&&initializing)return toast('Wait for the shared fund to finish connecting.');if(b&&A[b.dataset.act])A[b.dataset.act](b.dataset)});
+document.addEventListener('click',e=>{const b=e.target.closest('[data-act]');if(b&&initializing)return toast('Wait for the shared fund to finish connecting.');if(b&&['add','addc','newloan','repay','edit','del','editm','tog','saveopen','saverate','restore','reset'].includes(b.dataset.act)&&!isAdmin)return toast('Read-only access. Sign in with the fund admin account to make changes.',1);if(b&&A[b.dataset.act])A[b.dataset.act](b.dataset)});
 document.addEventListener('submit',e=>{if(e.target.id!=='addm')return;e.preventDefault();const n=e.target.n.value.trim();
   if(initializing)return toast('Wait for the shared fund to finish connecting.');
+  if(!isAdmin)return toast('Read-only access. Sign in with the fund admin account to make changes.',1);
   if(!n)return;if(D.members.some(m=>m.name.toLowerCase()===n.toLowerCase())&&!confirm(`A member named "${n}" already exists. Add another?`))return;
   commit(d=>d.members.push({id:uid(),name:n,active:true}))});
 document.addEventListener('input',e=>{const k=e.target.dataset.f;if(k){F[k]=e.target.value;renderList()}});
@@ -292,6 +327,15 @@ $('#file').onchange=e=>{const fl=e.target.files[0];e.target.value='';if(!fl)retu
     if(confirm(`Replace current records with this backup (${d.members.length} members, ${d.tx.length} transactions)?`)){commit(x=>Object.assign(x,d));toast('Backup restored')}};rd.readAsText(fl)};
 addEventListener('hashchange',render);
 render();
-if(cloud)initializeCloud();
+if(cloud){
+  cloud.auth.onAuthStateChange((event,session)=>{
+    authSession=session;isAdmin=sessionIsAdmin(session);
+    if(event==='SIGNED_IN'||event==='SIGNED_OUT'||event==='USER_UPDATED'){
+      initializing=true;syncMessage=isAdmin?'Refreshing fund as admin…':'Refreshing read-only fund…';render();
+      setTimeout(()=>initializeCloud(),0);
+    }else render();
+  });
+  initializeCloud();
+}
 if('serviceWorker' in navigator&&location.protocol.startsWith('http'))navigator.serviceWorker.register('sw.js').catch(()=>{});
 }
