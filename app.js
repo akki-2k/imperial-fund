@@ -191,12 +191,12 @@ function vDash(){
   const rows=act.map(m=>{const p=paid(D,m.id,selMonth);return{m,p,due:r2(Math.max(0,req-p))}});
   const pend=r2(rows.reduce((a,r)=>a+r.due,0)),target=req*act.length,got=rows.reduce((a,r)=>a+Math.min(r.p,req),0),pct=target?Math.round(got/target*100):0;
   const pendingMembers=memberPendingSummary(D,{currentMonth:selMonth});
+  const totalCollected = r2(s.contrib);
+  const totalBorrowed = r2(s.out);
   return `<section class="hero"><p>Available cash</p><strong class="big">${inr(s.bal)}</strong>${isAdmin?'<button class="primary" data-act="add">+ Add Transaction</button>':''}</section>
   <div class="grid">
-   <div class="card"><span>Collected money</span><b class="in">${inr(s.contrib)}</b></div>
-   <div class="card"><span>Total borrowed</span><b class="out">${inr(s.loan)}</b></div>
-   <div class="card"><span>Total repaid</span><b class="in">${inr(s.repay)}</b></div>
-   <div class="card"><span>Total expenses</span><b class="out">${inr(s.exp)}</b></div>
+   <div class="card"><span>Total collected amount</span><b class="in">${inr(totalCollected)}</b></div>
+   <div class="card"><span>Total borrowed</span><b class="out">${inr(totalBorrowed)}</b></div>
    <div class="card" style="grid-column:1/-1"><span>Pending for ${monthName(selMonth)}</span><b class="info">${inr(pend)}</b></div></div>
   <h2>Monthly collection</h2><div class="card">
    <label style="margin:0">Month<input type="month" id="selm" value="${selMonth}"></label>
@@ -219,7 +219,16 @@ function vMembers(){
 }
 
 function vTx(){
-  return `<div class="filters card"><input class="full" type="search" placeholder="Search name, note, amount" data-f="q" value="${esc(F.q)}" aria-label="Search">
+  const {by}=calc(D);
+  const lifetimeRows=D.members.map(m=>({name:m.name,total:by[m.id]?.c||0})).sort((a,b)=>b.total-a.total);
+  const totalLifetime = lifetimeRows.reduce((sum,row)=>sum + row.total, 0);
+  return `<div class="card"><h3>Lifetime contribution summary</h3>
+   <table style="width:100%;border-collapse:collapse;margin-top:8px">
+    <thead><tr><th style="text-align:left;padding:6px 0">Member</th><th style="text-align:right;padding:6px 0">Total</th></tr></thead>
+    <tbody>${lifetimeRows.map(row=>`<tr><td style="padding:6px 0">${esc(row.name)}</td><td style="text-align:right;padding:6px 0"><b class="in">${inr(row.total)}</b></td></tr>`).join('')}</tbody>
+    <tfoot><tr><td style="padding:8px 0;font-weight:700">Grand total</td><td style="text-align:right;padding:8px 0;font-weight:700"><b class="in">${inr(totalLifetime)}</b></td></tr></tfoot>
+   </table></div>
+  <div class="filters card"><input class="full" type="search" placeholder="Search name, note, amount" data-f="q" value="${esc(F.q)}" aria-label="Search">
    <select data-f="type" aria-label="Type"><option value="">All types</option>${Object.entries(TYPES).map(([k,v])=>`<option value="${k}" ${F.type===k?'selected':''}>${v.l}</option>`).join('')}</select>
    <select data-f="member" aria-label="Member"><option value="">All members</option>${D.members.map(m=>`<option value="${m.id}" ${F.member===m.id?'selected':''}>${esc(m.name)}</option>`).join('')}</select>
    <label style="margin:0">Month<input type="month" data-f="month" value="${F.month}"></label><span></span>
