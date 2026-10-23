@@ -33,6 +33,27 @@ function calc(d){
 }
 function rateFor(d,m){let a=200;for(const r of [...d.rates].sort((x,y)=>x.from.localeCompare(y.from)))if(r.from<=m)a=r.amount;return a}
 const paid=(d,id,m)=>r2(d.tx.filter(t=>t.type==='contribution'&&t.memberId===id&&t.month===m).reduce((a,t)=>a+t.amount,0));
+function monthToNumber(m){const [y,mo]=String(m).split('-').map(Number);return (y*12)+(mo-1);}
+function monthRange(start,end){const out=[];let cur=monthToNumber(start),stop=monthToNumber(end);for(;cur<=stop;cur++){const year=Math.floor(cur/12);const month=(cur%12)+1;out.push(`${String(year).padStart(4,'0')}-${String(month).padStart(2,'0')}`)}return out}
+function memberPendingSummary(d,opts={}){
+  const currentMonth=opts.currentMonth||thisMonth();
+  const periods=d.rates.map(r=>r.from).filter(Boolean).sort();
+  const firstMonth=periods[0]||currentMonth;
+  return d.members.map(m=>{
+    const memberTx=d.tx.filter(t=>t.type==='contribution'&&t.memberId===m.id);
+    const paidMonths=memberTx.reduce((acc,t)=>{acc[t.month]=(acc[t.month]||0)+t.amount;return acc},{});
+    const lastPaidMonth=Object.keys(paidMonths).sort().at(-1)||firstMonth;
+    const months=monthRange(lastPaidMonth,currentMonth);
+    let pending=0,firstPending=null,monthly=[];
+    months.forEach(month=>{
+      const expected=rateFor(d,month);
+      const paidThisMonth=paidMonths[month]||0;
+      const diff=r2(Math.max(0,expected-paidThisMonth));
+      if(diff>0){pending+=diff; if(!firstPending)firstPending=month; monthly.push({month,expected,paid:paidThisMonth,pending:diff});}
+    });
+    return {memberId:m.id,name:m.name,active:m.active,lastPaidMonth,firstPendingMonth:firstPending,pendingMonths:monthly.length,pendingAmount:r2(pending),months:monthly};
+  }).filter(x=>x.pendingAmount>0).sort((a,b)=>b.pendingAmount-a.pendingAmount);
+}
 function validTx(d,t,ign){
   if(!(t.amount>0)||!isFinite(t.amount))return 'Enter an amount greater than zero.';
   if(!/^\d{4}-\d{2}-\d{2}$/.test(t.date)||isNaN(new Date(t.date)))return 'Pick a valid date.';
@@ -61,7 +82,7 @@ function validData(d){
   return !!ok;
 }
 const sorted=l=>l.map((t,i)=>[t,i]).sort((a,b)=>b[0].date.localeCompare(a[0].date)||b[1]-a[1]).map(x=>x[0]);
-if(typeof module!=='undefined')module.exports={calc,validTx,blank,paid,rateFor,warnings,validData};
+if(typeof module!=='undefined')module.exports={calc,validTx,blank,paid,rateFor,memberPendingSummary,warnings,validData};
 
 /* ---------- UI ---------- */
 if(typeof document!=='undefined'){
@@ -169,6 +190,7 @@ function vDash(){
   const {s}=calc(D),act=D.members.filter(m=>m.active),req=rateFor(D,selMonth);
   const rows=act.map(m=>{const p=paid(D,m.id,selMonth);return{m,p,due:r2(Math.max(0,req-p))}});
   const pend=r2(rows.reduce((a,r)=>a+r.due,0)),target=req*act.length,got=rows.reduce((a,r)=>a+Math.min(r.p,req),0),pct=target?Math.round(got/target*100):0;
+  const pendingMembers=memberPendingSummary(D,{currentMonth:selMonth});
   return `<section class="hero"><p>Available cash</p><strong class="big">${inr(s.bal)}</strong>${isAdmin?'<button class="primary" data-act="add">+ Add Transaction</button>':''}</section>
   <div class="grid">
    <div class="card"><span>Total Contributions</span><b class="in">${inr(s.contrib)}</b></div>
@@ -181,6 +203,7 @@ function vDash(){
    ${act.length?`<div class="bar" aria-hidden="true"><i style="width:${pct}%"></i></div><small>${inr(got)} of ${inr(target)} collected (${inr(req)} per member)</small>
    <ul>${rows.map(r=>`<li class="row"><span>${esc(r.m.name)}</span><span>${r.p>=req?'<span class="chip paid">Paid</span>':`<span class="chip ${r.p>0?'part':'due'}">${r.p>0?'Part-paid, ':'Due '}${inr(r.due)}${r.p>0?' left':''}</span> ${isAdmin?`<button class="lnk" data-act="addc" data-m="${r.m.id}">Record</button>`:''}`}</span></li>`).join('')}</ul>`
    :'<p class="empty">No active members yet. <a href="#members">Add your members</a> to start tracking.</p>'}</div>
+  <h2>Outstanding by member</h2><div class="card">${pendingMembers.length?`<ul>${pendingMembers.map(r=>`<li class="row"><span>${esc(r.name)}</span><span><b class="out">${inr(r.pendingAmount)}</b>${r.firstPendingMonth?`<small> from ${monthName(r.firstPendingMonth)}${r.pendingMonths>1?` to ${monthName(selMonth)}`:''}</small>`:''}</span></li>`).join('')}</ul>`:'<p class="empty">No pending contribution due from their previous month to this month.</p>'}</div>
   <h2>Latest activity</h2><div class="card"><ul>${txRows(sorted(D.tx).slice(0,5),false)}</ul></div>`;
 }
 
