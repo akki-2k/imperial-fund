@@ -193,10 +193,10 @@ function vDash(){
   const pendingMembers=memberPendingSummary(D,{currentMonth:selMonth});
   return `<section class="hero"><p>Available cash</p><strong class="big">${inr(s.bal)}</strong>${isAdmin?'<button class="primary" data-act="add">+ Add Transaction</button>':''}</section>
   <div class="grid">
-   <div class="card"><span>Total Contributions</span><b class="in">${inr(s.contrib)}</b></div>
-   <div class="card"><span>Loans Outstanding</span><b class="out">${inr(s.out)}</b></div>
-   <div class="card"><span>Total Expenses</span><b class="out">${inr(s.exp)}</b></div>
-   <div class="card"><span>Total Repaid</span><b class="in">${inr(s.repay)}</b></div>
+   <div class="card"><span>Collected money</span><b class="in">${inr(s.contrib)}</b></div>
+   <div class="card"><span>Total borrowed</span><b class="out">${inr(s.loan)}</b></div>
+   <div class="card"><span>Total repaid</span><b class="in">${inr(s.repay)}</b></div>
+   <div class="card"><span>Total expenses</span><b class="out">${inr(s.exp)}</b></div>
    <div class="card" style="grid-column:1/-1"><span>Pending for ${monthName(selMonth)}</span><b class="info">${inr(pend)}</b></div></div>
   <h2>Monthly collection</h2><div class="card">
    <label style="margin:0">Month<input type="month" id="selm" value="${selMonth}"></label>
